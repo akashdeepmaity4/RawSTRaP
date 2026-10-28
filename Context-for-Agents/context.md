@@ -16,8 +16,6 @@ RawSTRaP/
 |   |-- parser.py                  # Sanitation, payload preparation, generic API and CSV/SQLite pipeline
 |   |-- providers.py               # Non-generative provider key checks
 |   `-- ui_graphics.py             # Supersampled Pillow artwork
-|-- SQL-to-Python/
-|   `-- python-func-for-sql.py     # Intended helper module; no implementation
 |-- temp-csv/                      # Generated CSV destination
 `-- Context-for-Agents/
     |-- context.md
