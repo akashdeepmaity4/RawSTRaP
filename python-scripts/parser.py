@@ -122,10 +122,6 @@ def extract_csv_content(response_body: str) -> str:
 
 	if not isinstance(csv_content, str) or not csv_content.strip():
 		raise ValueError("API response must contain non-empty CSV text.")
-	csv_content = csv_content.strip()
-	if csv_content.startswith("```") and csv_content.endswith("```"):
-		lines = csv_content.splitlines()
-		csv_content = "\n".join(lines[1:-1]).strip()
 	return csv_content
 
 
