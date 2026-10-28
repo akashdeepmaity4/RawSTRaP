@@ -5,16 +5,20 @@ from __future__ import annotations
 import importlib.util
 import os
 import queue
+import re
+import subprocess
+import sys
 import threading
 import tkinter as tk
 from pathlib import Path
-from tkinter import filedialog, messagebox
+from tkinter import filedialog, messagebox, simpledialog
 from typing import Any
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 PARSER_PATH = Path(__file__).with_name("parser.py")
 GRAPHICS_PATH = Path(__file__).with_name("ui_graphics.py")
+PROVIDER_PATH = Path(__file__).with_name("providers.py")
 TEXT_DOCUMENT_PATTERNS = "*.txt *.md *.rst *.csv *.tsv *.json *.xml *.html *.htm *.yaml *.yml *.toml"
 TEXT_DOCUMENT_EXTENSIONS = {
     ".txt", ".md", ".rst", ".csv", ".tsv", ".json", ".xml",
@@ -22,6 +26,7 @@ TEXT_DOCUMENT_EXTENSIONS = {
 }
 _PARSER_MODULE: Any | None = None
 _GRAPHICS_MODULE: Any | None = None
+_PROVIDER_MODULE: Any | None = None
 GOLD = "#efa900"
 INK = "#111111"
 PANEL = "#b0b0b0"
@@ -52,10 +57,25 @@ def _load_graphics_module() -> Any:
     return _GRAPHICS_MODULE
 
 
+def _load_provider_module() -> Any:
+    """Load the provider request adapters once."""
+    global _PROVIDER_MODULE
+    if _PROVIDER_MODULE is None:
+        spec = importlib.util.spec_from_file_location("rawstrap_ui_providers", PROVIDER_PATH)
+        if spec is None or spec.loader is None:
+            raise ImportError(f"Could not load provider module from {PROVIDER_PATH}")
+        _PROVIDER_MODULE = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = _PROVIDER_MODULE
+        spec.loader.exec_module(_PROVIDER_MODULE)
+    return _PROVIDER_MODULE
+
+
 class RawSTRaPApp:
     """Own the welcome screen and coordinate the parsing pipeline."""
 
-    def __init__(self, root: tk.Tk, provider: str = "", api_key: str = "") -> None:
+    def __init__(
+        self, root: tk.Tk, provider: str = "", api_key: str = "", model_id: str = ""
+    ) -> None:
         self.root = root
         self.root.title("RawSTRaP")
         self.root.geometry("567x573" if api_key else "520x555")
@@ -64,6 +84,7 @@ class RawSTRaPApp:
 
         self.provider = provider
         self.api_key = api_key
+        self.model_id = model_id
         self.source = ""
         self.prepared_payload = ""
         self._result_queue: queue.Queue[tuple[bool, Any]] = queue.Queue()
@@ -174,7 +195,7 @@ class RawSTRaPApp:
 
         self.status_label = tk.Label(
             self.root,
-            text="",
+            text=f"Selected model: {self.model_id}" if self.provider else "",
             bg=INK,
             fg=GOLD,
             font=("Georgia", 9),
@@ -236,7 +257,7 @@ class RawSTRaPApp:
         return self._set_art(
             self.landing_canvas,
             title="HORRAY!",
-            subtitle="API Validated and Safe.",
+            subtitle="API key verified.",
             title_y=121,
             subtitle_y=190,
             title_size=39,
@@ -320,9 +341,39 @@ class RawSTRaPApp:
         self.source = source
         if self.provider:
             self.prepared_payload = parser.prepare_provider_payload(source)
-            self.status_label.config(
-                text="Payload prepared locally. Provider generation is not enabled yet."
+            storage = self._ask_storage_options(parser)
+            if storage is None:
+                return
+            database_path, table_name = storage
+            provider_label = _load_provider_module().PROVIDERS[self.provider].label
+            confirmed_free = messagebox.askyesno(
+                "Confirm free API access",
+                f"The sanitized source and prompt will be sent to {provider_label} using "
+                f"model {self.model_id}. Continue only if you have verified in the "
+                "provider console that this key and model are on a free tier and this "
+                "request will not incur charges. RawSTRaP cannot verify billing status.",
+                parent=self.root,
             )
+            if not confirmed_free:
+                self.status_label.config(text="No request was sent.")
+                return
+            if Path(database_path).exists() and not messagebox.askyesno(
+                "Database already exists",
+                "This database file already exists. Rows will be added to the selected "
+                "table; existing rows will not be replaced. Continue?",
+                parent=self.root,
+            ):
+                return
+
+            self.status_label.config(text="Sending payload to the selected provider…")
+            self.processing = True
+            self._set_process_button_enabled(False)
+            threading.Thread(
+                target=self._run_provider_pipeline_worker,
+                args=(source, self.prepared_payload, database_path, table_name),
+                daemon=True,
+            ).start()
+            self.root.after(100, self._poll_pipeline_result)
             return
 
         if not os.environ.get("RAWSTRAP_API_URL"):
@@ -338,6 +389,64 @@ class RawSTRaPApp:
             daemon=True,
         ).start()
         self.root.after(100, self._poll_pipeline_result)
+
+    def _ask_storage_options(self, parser: Any) -> tuple[Path, str] | None:
+        """Collect a database filename and table name from GUI dialogs."""
+        database_name = simpledialog.askstring(
+            "Database name",
+            "Name the SQLite database (letters, numbers, spaces, dots, underscores, or hyphens):",
+            parent=self.root,
+        )
+        if database_name is None:
+            return None
+        database_name = database_name.strip()
+        if database_name.lower().endswith(".db"):
+            database_name = database_name[:-3]
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 _.-]{0,63}", database_name, flags=re.ASCII):
+            messagebox.showerror(
+                "Invalid database name",
+                "Use 1-64 letters, numbers, spaces, dots, underscores, or hyphens; begin with a letter or number.",
+                parent=self.root,
+            )
+            return None
+
+        table_name = simpledialog.askstring(
+            "Table name",
+            "Name the table (start with a letter or underscore; use only letters, numbers, and underscores):",
+            parent=self.root,
+        )
+        if table_name is None:
+            return None
+        table_name = table_name.strip()
+        try:
+            parser.validate_table_name(table_name)
+        except ValueError as error:
+            messagebox.showerror("Invalid table name", str(error), parent=self.root)
+            return None
+        return PROJECT_ROOT / f"{database_name}.db", table_name
+
+    def _run_provider_pipeline_worker(
+        self,
+        source: str,
+        payload: str,
+        database_path: Path,
+        table_name: str,
+    ) -> None:
+        try:
+            csv_response = _load_provider_module().generate_csv(
+                self.provider, self.api_key, self.model_id, payload
+            )
+            result = _load_parser_module().save_provider_csv(
+                source,
+                csv_response,
+                database_path=database_path,
+                table_name=table_name,
+            )
+            result["database_path"] = database_path
+            result["table_name"] = table_name
+            self._result_queue.put((True, result))
+        except Exception as error:
+            self._result_queue.put((False, str(error)))
 
     def _run_pipeline_worker(self, source_text: str) -> None:
         try:
@@ -360,8 +469,27 @@ class RawSTRaPApp:
             return
 
         self.status_label.config(
-            text=f"Saved {result['record_count']} row(s). CSV: {Path(result['csv_path']).name}"
+            text=(
+                f"Saved {result['record_count']} row(s) to {result['table_name']} "
+                f"in {Path(result['database_path']).name}. Opening its folder…"
+                if "database_path" in result
+                else f"Saved {result['record_count']} row(s). CSV: {Path(result['csv_path']).name}"
+            )
         )
+        if "database_path" in result:
+            self._open_database_folder(Path(result["database_path"]))
+
+    def _open_database_folder(self, database_path: Path) -> None:
+        """Open the operating system's file browser at the saved database."""
+        try:
+            if sys.platform == "win32":
+                os.startfile(database_path.parent)  # type: ignore[attr-defined]
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", "-R", str(database_path)])
+            else:
+                subprocess.Popen(["xdg-open", str(database_path.parent)])
+        except OSError as error:
+            self.status_label.config(text=f"Database saved, but could not open its folder: {error}")
 
     def _set_process_button_enabled(self, enabled: bool) -> None:
         """Prevent duplicate submissions while the background request runs."""
@@ -377,10 +505,10 @@ class RawSTRaPApp:
         )
 
 
-def launch(provider: str = "", api_key: str = "") -> None:
+def launch(provider: str = "", api_key: str = "", model_id: str = "") -> None:
     """Open the application, optionally with a validated provider session."""
     root = tk.Tk()
-    RawSTRaPApp(root, provider=provider, api_key=api_key)
+    RawSTRaPApp(root, provider=provider, api_key=api_key, model_id=model_id)
     root.mainloop()
 
 

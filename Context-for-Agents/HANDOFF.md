@@ -21,7 +21,9 @@ Continue work on RawSTRaP, a Python desktop app for preparing source text and tu
 - Uploads are limited to `.txt`, `.md`, `.rst`, `.csv`, `.tsv`, `.json`, `.xml`, `.html`, `.htm`, `.yaml`, `.yml`, and `.toml`. Files are read as UTF-8 with optional BOM and rejected on decoding errors or NUL bytes.
 - Sanitization normalizes line endings, removes commas, backslashes, non-ASCII characters, and control characters other than tabs/newlines, and trims outer whitespace.
 - `python-scripts/parser.py` defines `pre_payload = "lorem ipsum "`. Its `prepare_provider_payload(source)` sanitizes `source` and returns `payload = pre_payload + source`.
-- In provider mode, pressing PROCESS stores the sanitized source in `self.source`, the prepared payload in `self.prepared_payload`, and displays that generation is not enabled. No generation request or source-text upload to a provider is implemented.
+- In provider mode, the key check selects a likely text-generation model from the provider's model list. Pressing PROCESS stores sanitized source in `self.source`, builds `self.prepared_payload`, asks for database and table names, and asks the user to confirm that they verified free access for the selected key/model. If declined, no request is sent. If confirmed, the payload is sent directly to the selected provider from the desktop app.
+- The app cannot independently verify account billing tier. A mistaken free-access confirmation could allow billable API usage; model-list validation does not establish that a generation call is free.
+- Provider responses are expected to contain CSV text. The app saves the response in `temp-csv/`, validates its headers/rows, creates a SQLite table with TEXT columns named from the CSV headers, and inserts the rows with parameterized values. It stores the database in the project root and opens that folder in the OS file browser after a successful save.
 - There is no backend server in the repository. Preparation occurs in the desktop app. The owner selected direct-from-desktop provider calls for future generation but explicitly said not to add generation calls yet.
 - The legacy generic parser path is used only when no provider is set. It uses `RAWSTRAP_API_URL`, sends source text to that generic endpoint, accepts CSV directly or in JSON `csv`, `content`, or `text`, writes a CSV under `temp-csv/`, validates it, and saves JSON row records into SQLite `parsed_records`. It does not use `pre_payload` and is not provider-aware.
 - SQLite row fields are `source_text`, `row_number`, `record_json`, and UTC `created_at`. Do not infer other schema fields or promise an extraction schema.
@@ -39,14 +41,14 @@ Continue work on RawSTRaP, a Python desktop app for preparing source text and tu
 
 ## Known gaps and next work
 
-- Provider-specific generation and response parsing are not implemented. Do not route a selected provider key through `RAWSTRAP_API_URL`; that adapter is not provider-aware.
+- Provider-specific generation is implemented for the listed providers using their respective text endpoints. Review current official API docs before changing request details. Do not route a selected provider key through `RAWSTRAP_API_URL`; that adapter remains separate and is not provider-aware.
 - Before adding generation, confirm provider/model, official request and response format, billing expectations, and failure handling. No live calls are authorized by the current implementation request.
 - There is no agreed natural-language extraction schema. CSV headers define fields; rows are stored as JSON.
-- The latest observed compile and smoke run was performed before the latest sanitation and payload-preparation edits. At that earlier run, compilation succeeded and all 13 smoke sub-tests passed; provider checks were mocked. These latest edits have not been tested yet.
+- The latest observed compile and smoke run predates the provider-generation and dynamic CSV-table changes. At that earlier run, compilation succeeded and all 13 smoke sub-tests passed; provider checks were mocked. The latest changes have not been tested, and no live provider generation call was made by the agent.
 
 ## Suggested next steps
 
 1. Run compile and offline smoke checks after the latest changes; report outcomes accurately.
-2. Wait for owner approval and details before implementing any provider generation request.
-3. Add offline tests for comma/backslash/non-ASCII sanitation, payload concatenation, and text-document upload validation when requested.
+2. Add mocked generation-response and dynamic SQLite table checks without live provider requests.
+3. Review the model-selection heuristic and free-access confirmation with the owner; the app cannot prove billing tier before sending.
 4. Keep this handoff and `context.md` aligned with verified code. Do not edit the approved policy or guardrails without the required authorization.

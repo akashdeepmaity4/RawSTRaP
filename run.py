@@ -197,8 +197,10 @@ class WelcomeFlow:
 	def _validate_worker(self, provider: str, api_key: str) -> None:
 		try:
 			providers = _load_module("rawstrap_providers", PROVIDER_MODULE_PATH)
-			model_count = providers.validate_api_key(provider, api_key)
-			self._results.put((True, (provider, api_key, model_count)))
+			model_count, model_id = providers.validate_api_key(
+				provider, api_key, include_model=True
+			)
+			self._results.put((True, (provider, api_key, model_count, model_id)))
 		except Exception as error:
 			self._results.put((False, str(error)))
 
@@ -215,14 +217,16 @@ class WelcomeFlow:
 			self.status_label.config(text=result)
 			return
 
-		provider, api_key, model_count = result
-		self.status_label.config(text=f"Key verified. {model_count} model(s) available; opening UI…")
-		self.root.after(250, lambda: self._open_ui(provider, api_key))
+		provider, api_key, model_count, model_id = result
+		self.status_label.config(
+			text=f"Key verified. {model_count} model(s) available; selected {model_id}."
+		)
+		self.root.after(250, lambda: self._open_ui(provider, api_key, model_id))
 
-	def _open_ui(self, provider: str, api_key: str) -> None:
+	def _open_ui(self, provider: str, api_key: str, model_id: str) -> None:
 		self.root.destroy()
 		ui_module = _load_module("rawstrap_main_ui", UI_MODULE_PATH)
-		ui_module.launch(provider=provider, api_key=api_key)
+		ui_module.launch(provider=provider, api_key=api_key, model_id=model_id)
 
 
 def main() -> None:

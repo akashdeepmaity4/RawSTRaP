@@ -36,21 +36,22 @@ The repository's `.gitignore` excludes generated files, environments, `temp-csv/
 - Source entry: users can type raw text or upload a plain-text document. Upload extensions are limited to `.txt`, `.md`, `.rst`, `.csv`, `.tsv`, `.json`, `.xml`, `.html`, `.htm`, `.yaml`, `.yml`, and `.toml`; files are decoded as UTF-8 (optional BOM) and rejected if they contain NUL bytes.
 - Sanitation: `python-scripts/parser.py::sanitize_source_text` normalizes CRLF/CR line endings, removes commas, backslashes, non-ASCII characters, and control characters other than tabs/newlines, then trims outer whitespace.
 - Prefix: `python-scripts/parser.py` defines `pre_payload = "lorem ipsum "`. `prepare_provider_payload(source)` sanitizes the source and returns the simple concatenation `payload = pre_payload + source`.
-- Current UI behavior: when a provider is selected, pressing PROCESS sanitizes the source and prepares `self.prepared_payload` in memory. It displays that provider generation is not enabled. No prompt or source text is sent to the selected provider.
+- Current UI behavior: after key validation, the app selects a text-generation model from the provider's model list. Pressing PROCESS sanitizes the source, builds `self.prepared_payload`, asks for database and table names, and requires the user to confirm they verified free access for the selected key/model before sending. The app cannot independently verify billing tier; declining the confirmation sends nothing.
 - Legacy generic pipeline: when no provider is set, the UI can send source text to `RAWSTRAP_API_URL`. `parser.py` accepts CSV text directly or inside JSON `csv`, `content`, or `text`, writes CSV under `temp-csv/`, validates rows, and stores each CSV row as JSON in SQLite table `parsed_records`. This generic path does not use the selected provider and does not prepend `pre_payload`.
 - SQLite uses parameterized values. Rows retain `source_text`, `row_number`, `record_json`, and UTC `created_at`.
 
-There is no backend server in this repository. The source preparation described above runs locally in the desktop app. The provider API, when generation is later implemented, would receive requests directly from the desktop app as instructed by the owner; no such generation request is implemented yet.
+There is no backend server in this repository. Source preparation and SQLite writes run locally in the desktop app. After the GUI free-access confirmation, a generation request is sent directly from the desktop app to the selected provider. API usage may be billable if the user's verification is incorrect; model-list validation cannot confirm cost status.
 
 ## 4. Current Implementation Status
 
 - `run.py` shows a welcome/provider selection screen, then a masked key entry screen. It performs key validation on a worker thread and opens the main UI on success.
 - `providers.py` implements one GET model-list request for each of five providers and maps common authentication, payment, rate-limit, network, and response errors. These requests are separate from generation.
-- `UI.py` shows the post-validation landing screen, accepts typed text or supported UTF-8 plain-text documents, and applies sanitation before use. Provider mode currently prepares the prefixed payload locally and stops without making a generation call.
-- `parser.py` also retains a generic HTTP POST adapter plus CSV extraction, validation, file output, and SQLite persistence. It does not define a natural-language extraction schema.
+- `UI.py` shows the post-validation landing screen, accepts typed text or supported UTF-8 plain-text documents, collects database/table names, gates generation behind the free-access confirmation, and opens the database folder after saving.
+- `providers.py` sends `pre_payload + source` to provider-specific text-generation endpoints and extracts the response text. The app selects a likely text model from the provider's available model list.
+- `parser.py` retains a generic HTTP POST adapter plus CSV extraction, validation, file output, and SQLite persistence. The provider route saves the model CSV under `temp-csv/` and creates a SQLite table whose TEXT columns come from CSV headers. The exact headers are model-generated; no fixed extraction schema is guaranteed.
 - `ui_graphics.py` draws smooth artwork through Pillow supersampling; Tkinter entry, text, menu, and status widgets remain native controls.
 - `SQL-to-Python/python-func-for-sql.py` only contains a comment describing an intended helper role.
-- `smoke_test.py` is an offline printed smoke suite, ignored by the current Git rules. Provider tests use mocks and make no live requests.
+- `smoke_test.py` is an offline printed smoke suite, ignored by the current Git rules. Existing provider tests cover mocked key validation only; no live provider calls or provider generation calls have been made by the agent.
 
 ## 5. Guardrails for Further Work
 

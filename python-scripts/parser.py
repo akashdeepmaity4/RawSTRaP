@@ -16,6 +16,7 @@ from contextlib import closing
 import io
 import json
 import os
+import re
 import sqlite3
 import urllib.error
 import urllib.request
@@ -121,6 +122,10 @@ def extract_csv_content(response_body: str) -> str:
 
 	if not isinstance(csv_content, str) or not csv_content.strip():
 		raise ValueError("API response must contain non-empty CSV text.")
+	csv_content = csv_content.strip()
+	if csv_content.startswith("```") and csv_content.endswith("```"):
+		lines = csv_content.splitlines()
+		csv_content = "\n".join(lines[1:-1]).strip()
 	return csv_content
 
 
@@ -133,8 +138,10 @@ def parse_csv_content(csv_content: str) -> list[dict[str, str]]:
 	headers = [header.strip() if header is not None else "" for header in reader.fieldnames]
 	if any(not header for header in headers):
 		raise ValueError("CSV headers must not be empty.")
-	if len(set(headers)) != len(headers):
+	if len({header.casefold() for header in headers}) != len(headers):
 		raise ValueError("CSV headers must be unique.")
+	if any("\x00" in header for header in headers):
+		raise ValueError("CSV headers must not contain NUL characters.")
 
 	records: list[dict[str, str]] = []
 	for line_number, row in enumerate(reader, start=2):
@@ -142,6 +149,73 @@ def parse_csv_content(csv_content: str) -> list[dict[str, str]]:
 			raise ValueError(f"CSV row {line_number} has a different number of fields than its header.")
 		records.append({header: row[original] for header, original in zip(headers, reader.fieldnames)})
 	return records
+
+
+def validate_table_name(table_name: str) -> str:
+	"""Check and return a portable SQLite table name supplied by the user."""
+	if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", table_name, flags=re.ASCII):
+		raise ValueError("Table name must start with a letter or underscore and contain only letters, digits, and underscores.")
+	return table_name
+
+
+def _quote_identifier(identifier: str) -> str:
+	"""Quote an SQLite identifier, escaping embedded double quotes."""
+	return '"' + identifier.replace('"', '""') + '"'
+
+
+def save_csv_rows_to_sqlite(
+	records: list[dict[str, str]],
+	database_path: str | Path,
+	table_name: str,
+) -> int:
+	"""Create a table from CSV headers and insert its rows as TEXT values."""
+	validate_table_name(table_name)
+	if not records:
+		raise ValueError("CSV must contain at least one data row.")
+	headers = list(records[0])
+	if not headers:
+		raise ValueError("CSV must include at least one column.")
+	if any(not header for header in headers):
+		raise ValueError("CSV headers must not be empty.")
+	if any(set(record) != set(headers) for record in records):
+		raise ValueError("CSV rows must have the same columns.")
+
+	database = Path(database_path)
+	database.parent.mkdir(parents=True, exist_ok=True)
+	quoted_table = _quote_identifier(table_name)
+	quoted_columns = [_quote_identifier(header) for header in headers]
+	column_definitions = ", ".join(f"{column} TEXT" for column in quoted_columns)
+	column_list = ", ".join(quoted_columns)
+	placeholders = ", ".join("?" for _ in headers)
+	with closing(sqlite3.connect(database)) as connection:
+		with connection:
+			connection.execute(
+				f"CREATE TABLE IF NOT EXISTS {quoted_table} ({column_definitions})"
+			)
+			connection.executemany(
+				f"INSERT INTO {quoted_table} ({column_list}) VALUES ({placeholders})",
+				[tuple(record[header] for header in headers) for record in records],
+			)
+	return len(records)
+
+
+def save_provider_csv(
+	source_text: str,
+	csv_response: str,
+	*,
+	database_path: str | Path,
+	table_name: str,
+	output_dir: str | Path = DEFAULT_CSV_DIR,
+) -> dict[str, Any]:
+	"""Validate a provider's CSV response, save it, and create a matching table."""
+	source_text = sanitize_source_text(source_text)
+	if not source_text:
+		raise ValueError("Source text must not be empty.")
+	csv_content = extract_csv_content(csv_response)
+	records = parse_csv_content(csv_content)
+	csv_path = write_csv_file(csv_content, output_dir)
+	saved_count = save_csv_rows_to_sqlite(records, database_path, table_name)
+	return {"csv_path": csv_path, "record_count": saved_count, "records": records}
 
 
 def write_csv_file(csv_content: str, output_dir: str | Path = DEFAULT_CSV_DIR) -> Path:
@@ -158,8 +232,11 @@ def save_records_to_sqlite(
 	source_text: str,
 	records: list[dict[str, str]],
 	database_path: str | Path = DEFAULT_DATABASE,
+	table_name: str = TABLE_NAME,
 ) -> int:
 	"""Save parsed CSV rows transactionally as JSON payloads in SQLite."""
+	validate_table_name(table_name)
+	quoted_table = _quote_identifier(table_name)
 	database = Path(database_path)
 	database.parent.mkdir(parents=True, exist_ok=True)
 	created_at = datetime.now(timezone.utc).isoformat()
@@ -167,7 +244,7 @@ def save_records_to_sqlite(
 	with closing(sqlite3.connect(database)) as connection:
 		with connection:
 			connection.execute(
-				f"""CREATE TABLE IF NOT EXISTS {TABLE_NAME} (
+				f"""CREATE TABLE IF NOT EXISTS {quoted_table} (
 					id INTEGER PRIMARY KEY AUTOINCREMENT,
 					source_text TEXT NOT NULL,
 					row_number INTEGER NOT NULL,
@@ -176,7 +253,7 @@ def save_records_to_sqlite(
 				)"""
 			)
 			connection.executemany(
-				f"""INSERT INTO {TABLE_NAME}
+				f"""INSERT INTO {quoted_table}
 					(source_text, row_number, record_json, created_at)
 					VALUES (?, ?, ?, ?)""",
 				[
@@ -194,6 +271,7 @@ def run_pipeline(
 	api_key: str | None = None,
 	output_dir: str | Path = DEFAULT_CSV_DIR,
 	database_path: str | Path = DEFAULT_DATABASE,
+	table_name: str = TABLE_NAME,
 	api_caller: Callable[[str], str] | None = None,
 ) -> dict[str, Any]:
 	"""Run text→API→CSV transfer→parse→SQLite save, returning output metadata.
@@ -217,5 +295,5 @@ def run_pipeline(
 	csv_content = extract_csv_content(response_body)
 	csv_path = write_csv_file(csv_content, output_dir)
 	records = parse_csv_content(csv_content)
-	saved_count = save_records_to_sqlite(source_text, records, database_path)
+	saved_count = save_records_to_sqlite(source_text, records, database_path, table_name)
 	return {"csv_path": csv_path, "record_count": saved_count, "records": records}
