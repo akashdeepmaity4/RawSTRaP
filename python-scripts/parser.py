@@ -67,7 +67,6 @@ def send_payload_to_api(
 	api_key: str | None = None,
 	timeout: int = API_TIMEOUT_SECONDS,
 ) -> str:
-	"""POST source text to the configured endpoint and return its response body."""
 	source_text = sanitize_source_text(source_text)
 	if not source_text.strip():
 		raise ValueError("Source text must not be empty.")
@@ -270,11 +269,6 @@ def run_pipeline(
 	table_name: str = TABLE_NAME,
 	api_caller: Callable[[str], str] | None = None,
 ) -> dict[str, Any]:
-	"""Run text→API→CSV transfer→parse→SQLite save, returning output metadata.
-
-	``api_caller`` is an optional dependency-injection hook for tests and
-	alternate API adapters; it receives source text and returns a response body.
-	"""
 	source_text = sanitize_source_text(source_text)
 	if not source_text:
 		raise ValueError("Source text must not be empty.")

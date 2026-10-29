@@ -1,5 +1,7 @@
 """Supersampled Pillow artwork for smooth Tkinter screens."""
 
+# I made this to render the UI without aliasing.
+
 from __future__ import annotations
 
 import os
@@ -10,11 +12,11 @@ from PIL import Image, ImageDraw, ImageFont, ImageTk
 
 
 SCALE = 4
-GOLD = "#efa900"
+GOLD = "#e3a004"
 HOVER_GOLD = "#f6b500"
 INK = "#111111"
 PANEL = "#b0b0b0"
-BACKGROUND = "#eef0f4"
+BACKGROUND = "#121212"
 
 
 def _font(name: str, size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
@@ -48,14 +50,18 @@ def render_artwork(
     title_font: str = "display",
     footer: str = "",
 ) -> Image.Image:
-    """Render screen artwork above target resolution and downsample smoothly."""
+    '''
+    
+    Render screen artwork above target resolution and downsample smoothly.
+    
+
+    '''
     image = Image.new("RGB", (width * SCALE, height * SCALE), BACKGROUND)
     draw = ImageDraw.Draw(image)
 
     def px(value: int) -> int:
         return value * SCALE
 
-    # Rounded outer frame and recessed black panel, matching the supplied UI art.
     draw.rounded_rectangle(
         (px(round(width * 0.086)), px(17), px(round(width * 0.935)), px(height - 7)),
         radius=px(39), fill=PANEL, outline="#151515", width=px(5),
@@ -130,5 +136,4 @@ def render_screen(
     height: int,
     **options: Any,
 ) -> ImageTk.PhotoImage:
-    """Build a Tk-compatible image from the antialiased artwork."""
     return ImageTk.PhotoImage(render_artwork(width, height, **options))

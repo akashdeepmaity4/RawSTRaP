@@ -15,10 +15,10 @@ ROOT = Path(__file__).resolve().parent
 PROVIDER_MODULE_PATH = ROOT / "python-scripts" / "providers.py"
 UI_MODULE_PATH = ROOT / "python-scripts" / "UI.py"
 GRAPHICS_MODULE_PATH = ROOT / "python-scripts" / "ui_graphics.py"
-GOLD = "#efa900"
+GOLD = "#e3a004"
 INK = "#111111"
 PANEL = "#b0b0b0"
-BACKGROUND = "#eef0f4"
+BACKGROUND = "#121212"
 PROVIDER_OPTIONS = (
 	("Google Gemini", "gemini"),
 	("OpenAI", "openai"),
@@ -68,6 +68,7 @@ class WelcomeFlow:
 		self.root.resizable(False, False)
 		self.root.configure(bg=BACKGROUND)
 		self.provider = ""
+		self.api_key = ""
 		self._results: queue.Queue[tuple[bool, Any]] = queue.Queue()
 		self._draw_welcome_screen()
 
@@ -79,16 +80,26 @@ class WelcomeFlow:
 		return canvas
 
 	def _draw_welcome_screen(self) -> None:
+		self.root.geometry("520x555")
+		for child in self.root.winfo_children():
+			child.destroy()
 		canvas = self._draw_shell()
 		art_id = _draw_screen_art(
 			canvas,
 			title="WELCOME!",
 			subtitle="Choose an API provider to continue",
-			buttons=({"bounds": (145, 402, 362, 445), "label": "Continue", "font_size": 15},),
+			buttons=(
+				{"bounds": (145, 402, 362, 445), "label": "Continue", "font_size": 15},
+				{"bounds": (203, 462, 317, 502), "label": "Exit", "font_size": 12},
+			),
 		)
 
 		select_border = tk.Frame(self.root, bg=GOLD, padx=8, pady=8)
-		self.provider_var = tk.StringVar(value=PROVIDER_OPTIONS[0][0])
+		selected_label = next(
+			(label for label, provider_id in PROVIDER_OPTIONS if provider_id == self.provider),
+			PROVIDER_OPTIONS[0][0],
+		)
+		self.provider_var = tk.StringVar(value=selected_label)
 		self.provider_menu = tk.OptionMenu(
 			select_border,
 			self.provider_var,
@@ -107,24 +118,33 @@ class WelcomeFlow:
 		self.provider_menu.bind("<Return>", lambda _event: self._select_provider())
 		self.welcome_canvas = canvas
 		self.welcome_art_id = art_id
-		self.welcome_hover = False
+		self.welcome_hover = -1
 
 	def _welcome_art_click(self, event: tk.Event) -> None:
 		if 145 <= event.x <= 362 and 402 <= event.y <= 445:
 			self._select_provider()
+		elif 203 <= event.x <= 317 and 462 <= event.y <= 502:
+			self.root.destroy()
 
 	def _welcome_art_motion(self, event: tk.Event) -> None:
-		hovering = 145 <= event.x <= 362 and 402 <= event.y <= 445
-		if hovering == self.welcome_hover:
+		if 145 <= event.x <= 362 and 402 <= event.y <= 445:
+			hover_index = 0
+		elif 203 <= event.x <= 317 and 462 <= event.y <= 502:
+			hover_index = 1
+		else:
+			hover_index = -1
+		if hover_index == self.welcome_hover:
 			return
-		self.welcome_hover = hovering
+		self.welcome_hover = hover_index
 		image = _load_module("rawstrap_ui_graphics", GRAPHICS_MODULE_PATH).render_screen(
 			520, 555,
 			title="WELCOME!",
 			subtitle="Choose an API provider to continue",
 			buttons=(
 				{"bounds": (145, 402, 362, 445), "label": "Continue", "font_size": 15,
-				 "fill": "#f6b500" if hovering else GOLD},
+				 "fill": "#f6b500" if hover_index == 0 else GOLD},
+				{"bounds": (203, 462, 317, 502), "label": "Exit", "font_size": 12,
+				 "fill": "#f6b500" if hover_index == 1 else GOLD},
 			),
 			title_y=113, subtitle_y=181, title_size=35,
 		)
@@ -141,7 +161,8 @@ class WelcomeFlow:
 			return
 		self._draw_key_screen(label)
 
-	def _draw_key_screen(self, provider_label: str) -> None:
+	def _draw_key_screen(self, provider_label: str, api_key: str = "") -> None:
+		self.root.geometry("520x555")
 		for child in self.root.winfo_children():
 			child.destroy()
 		canvas = self._draw_shell()
@@ -149,7 +170,10 @@ class WelcomeFlow:
 			canvas,
 			title="API KEY",
 			subtitle=f"Enter your {provider_label} key to continue",
-			buttons=({"bounds": (145, 415, 362, 458), "label": "Continue", "font_size": 15},),
+			buttons=(
+				{"bounds": (145, 415, 362, 458), "label": "Continue", "font_size": 15},
+				{"bounds": (203, 468, 317, 507), "label": "Go Back ←", "font_size": 12},
+			),
 			title_size=32,
 		)
 
@@ -159,6 +183,8 @@ class WelcomeFlow:
 			fg=GOLD, insertbackground=GOLD, font=("Segoe UI", 14),
 		)
 		self.key_entry.pack(fill="both", expand=True)
+		if api_key:
+			self.key_entry.insert(0, api_key)
 		canvas.create_window(254, 327, width=341, height=52, window=entry_border)
 
 		self.status_label = tk.Label(
@@ -176,6 +202,8 @@ class WelcomeFlow:
 	def _key_art_click(self, event: tk.Event) -> None:
 		if 145 <= event.x <= 362 and 415 <= event.y <= 458:
 			self._validate_key()
+		elif 203 <= event.x <= 317 and 468 <= event.y <= 507:
+			self._draw_welcome_screen()
 
 	def _validate_key(self) -> None:
 		if self.validating:
@@ -224,9 +252,22 @@ class WelcomeFlow:
 		self.root.after(250, lambda: self._open_ui(provider, api_key, model_id))
 
 	def _open_ui(self, provider: str, api_key: str, model_id: str) -> None:
-		self.root.destroy()
+		self.api_key = api_key
 		ui_module = _load_module("rawstrap_main_ui", UI_MODULE_PATH)
-		ui_module.launch(provider=provider, api_key=api_key, model_id=model_id)
+		self.ui_app = ui_module.RawSTRaPApp(
+			self.root,
+			provider=provider,
+			api_key=api_key,
+			model_id=model_id,
+			on_back=self._return_to_key_screen,
+		)
+
+	def _return_to_key_screen(self) -> None:
+		provider_label = next(
+			(label for label, provider_id in PROVIDER_OPTIONS if provider_id == self.provider),
+			"API provider",
+		)
+		self._draw_key_screen(provider_label, api_key=self.api_key)
 
 
 def main() -> None:
