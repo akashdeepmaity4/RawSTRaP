@@ -1,3 +1,4 @@
+.codex
 *.pyc
 __pycache__
 *.py[cod]
@@ -15,6 +16,7 @@ temp-csv/
 database.db
 *.sb
 *.sh
+.codex
 temp-csv/
 smoke_test.py
 tests/
