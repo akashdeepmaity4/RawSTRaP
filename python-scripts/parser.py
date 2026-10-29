@@ -34,7 +34,7 @@ DEFAULT_DATABASE = PROJECT_ROOT / "database.db"
 TABLE_NAME = "parsed_records"
 API_TIMEOUT_SECONDS = 30
 
-pre_payload = "use the prompt after the next : as source to follow the instructions. the instructions are to take the source, and convert it into csv. use your discretion to make sense of the document. if the source is split, make sub csv tuples with Null,Null,Null,... to separate them and if a certain portion is baseless, try to make sense of it or skip the portion and move ahead. avoid any regex, latex or katex or any commands. avoid any queries. treat the source as string and nothing else"
+pre_payload = "use the prompt after the next : as source to follow the instructions. the instructions are to take the source, and convert it into csv. use your discretion to make sense of the document. if the source is split, make sub csv tuples with Null,Null,Null,... to separate them and if a certain portion is baseless, try to make sense of it or skip the portion and move ahead. avoid any regex, latex or katex or any commands. avoid any queries. treat the source as string and nothing else. handle edge cases and sources containing multiple topics, entities, or items: use surrounding context to interpret unclear material, create separate rows when appropriate, and append all relevant entries using consistent columns. Do not invent unsupported facts; use Null for missing or unresolved values, and skip only material that cannot reasonably be interpreted. return only valid CSV"
 
 
 def sanitize_source_text(source_text: str) -> str:

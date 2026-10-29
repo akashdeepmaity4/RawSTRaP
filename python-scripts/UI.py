@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import csv
 import os
 import queue
 import re
@@ -11,7 +12,7 @@ import sys
 import threading
 import tkinter as tk
 from pathlib import Path
-from tkinter import filedialog, messagebox, simpledialog
+from tkinter import filedialog, messagebox, simpledialog, ttk
 from typing import Any, Callable
 
 
@@ -511,6 +512,10 @@ class RawSTRaPApp:
                 else f"Saved {result['record_count']} row(s). CSV: {Path(result['csv_path']).name}"
             )
         )
+        parser = _load_parser_module()
+        self.result_database_path = Path(
+            result.get("database_path", parser.DEFAULT_DATABASE)
+        )
         self._draw_success_screen(Path(result["csv_path"]))
 
     def _draw_success_screen(self, csv_path: Path) -> None:
@@ -572,9 +577,9 @@ class RawSTRaPApp:
         self._render_success_art(self.success_canvas)
 
     def _preview_result_file(self) -> None:
-        """Display the generated CSV in a read-only window."""
+        """Open stage six with the generated CSV shown as a read-only table."""
         try:
-            content = self.result_csv_path.read_text(encoding="utf-8")
+            content = self.result_csv_path.read_text(encoding="utf-8-sig")
         except (OSError, UnicodeError) as error:
             messagebox.showerror(
                 "Could not preview file",
@@ -583,46 +588,143 @@ class RawSTRaPApp:
             )
             return
 
-        preview = tk.Toplevel(self.root)
-        preview.title(f"Preview: {self.result_csv_path.name}")
-        preview.geometry("720x500")
-        preview.configure(bg=INK)
-        text = tk.Text(
-            preview,
-            wrap="none",
+        try:
+            records = _load_parser_module().parse_csv_content(content)
+        except (csv.Error, ValueError) as error:
+            messagebox.showerror(
+                "Could not preview file",
+                f"The result CSV could not be displayed as a table.\n\n{error}",
+                parent=self.root,
+            )
+            return
+        self._draw_preview_table(records)
+
+    def _draw_preview_table(self, records: list[dict[str, str]]) -> None:
+        """Render all CSV records in a non-editable, scrollable table stage."""
+        for child in self.root.winfo_children():
+            child.destroy()
+
+        self.root.geometry("1000x700")
+        self.root.resizable(True, True)
+        self.root.configure(bg=INK)
+
+        container = tk.Frame(self.root, bg=INK, padx=24, pady=20)
+        container.pack(fill="both", expand=True)
+
+        tk.Label(
+            container,
+            text="RESULT PREVIEW",
             bg=INK,
-            fg="#f5f5f5",
-            insertbackground=GOLD,
-            font=("Consolas", 10),
-            padx=12,
-            pady=12,
+            fg=GOLD,
+            font=("Segoe UI", 22, "bold"),
+        ).pack(anchor="w")
+        tk.Label(
+            container,
+            text=str(self.result_csv_path),
+            bg=INK,
+            fg="#d0d0d0",
+            font=("Segoe UI", 9),
+            anchor="w",
+        ).pack(fill="x", pady=(4, 16))
+
+        table_frame = tk.Frame(container, bg=GOLD, padx=2, pady=2)
+        table_frame.pack(fill="both", expand=True)
+
+        headers = list(records[0]) if records else []
+        columns = tuple(f"column_{index}" for index in range(len(headers)))
+        style = ttk.Style(self.root)
+        if "clam" in style.theme_names():
+            style.theme_use("clam")
+        style.configure(
+            "Preview.Treeview",
+            background="#ffffff",
+            foreground="#161616",
+            fieldbackground="#ffffff",
+            rowheight=28,
+            font=("Segoe UI", 10),
         )
-        vertical = tk.Scrollbar(preview, orient="vertical", command=text.yview)
-        horizontal = tk.Scrollbar(preview, orient="horizontal", command=text.xview)
-        text.configure(yscrollcommand=vertical.set, xscrollcommand=horizontal.set)
-        text.grid(row=0, column=0, sticky="nsew")
+        style.configure(
+            "Preview.Treeview.Heading",
+            background=GOLD,
+            foreground=INK,
+            font=("Segoe UI", 10, "bold"),
+            relief="flat",
+        )
+        style.map("Preview.Treeview", background=[("selected", "#e8c66a")])
+
+        table = ttk.Treeview(
+            table_frame,
+            columns=columns,
+            show="headings",
+            style="Preview.Treeview",
+            selectmode="browse",
+        )
+        vertical = ttk.Scrollbar(table_frame, orient="vertical", command=table.yview)
+        horizontal = ttk.Scrollbar(table_frame, orient="horizontal", command=table.xview)
+        table.configure(yscrollcommand=vertical.set, xscrollcommand=horizontal.set)
+        table.grid(row=0, column=0, sticky="nsew")
         vertical.grid(row=0, column=1, sticky="ns")
         horizontal.grid(row=1, column=0, sticky="ew")
-        preview.grid_rowconfigure(0, weight=1)
-        preview.grid_columnconfigure(0, weight=1)
-        text.insert("1.0", content)
-        text.configure(state="disabled")
+        table_frame.grid_rowconfigure(0, weight=1)
+        table_frame.grid_columnconfigure(0, weight=1)
+
+        for column, heading in zip(columns, headers):
+            table.heading(column, text=heading, anchor="w")
+            table.column(
+                column,
+                width=min(max(len(heading) * 9 + 32, 110), 320),
+                minwidth=90,
+                stretch=True,
+                anchor="w",
+            )
+        for record in records:
+            table.insert("", "end", values=tuple(record[header] for header in headers))
+
+        footer = tk.Frame(container, bg=INK)
+        footer.pack(fill="x", pady=(14, 0))
+        tk.Label(
+            footer,
+            text=f"{len(records)} row(s) · {len(headers)} column(s) · Read-only",
+            bg=INK,
+            fg="#d0d0d0",
+            font=("Segoe UI", 10),
+        ).pack(side="left", pady=8)
+        tk.Button(
+            footer,
+            text="← Back to Results",
+            command=self._draw_success_screen_from_preview,
+            bg=GOLD,
+            fg=INK,
+            activebackground="#f6b500",
+            activeforeground=INK,
+            relief="flat",
+            padx=18,
+            pady=9,
+            font=("Segoe UI", 10, "bold"),
+            cursor="hand2",
+        ).pack(side="right")
+
+    def _draw_success_screen_from_preview(self) -> None:
+        """Return from stage six to the existing results screen."""
+        self.root.resizable(False, False)
+        self._draw_success_screen(self.result_csv_path)
 
     def _open_result_location(self) -> None:
-        """Reveal the generated CSV in the operating system's file browser."""
+        """Open the directory containing the database created by processing."""
         try:
-            if not self.result_csv_path.is_file():
-                raise FileNotFoundError(f"Result file not found: {self.result_csv_path}")
+            database_directory = self.result_database_path.parent
+            if not database_directory.is_dir():
+                raise FileNotFoundError(f"Database directory not found: {database_directory}")
             if sys.platform == "win32":
-                subprocess.Popen(["explorer", "/select,", str(self.result_csv_path)])
+                os.startfile(database_directory)  # type: ignore[attr-defined]
             elif sys.platform == "darwin":
-                subprocess.Popen(["open", "-R", str(self.result_csv_path)])
+                subprocess.Popen(["open", str(database_directory)])
             else:
-                subprocess.Popen(["xdg-open", str(self.result_csv_path.parent)])
+                subprocess.Popen(["xdg-open", str(database_directory)])
         except OSError as error:
             messagebox.showerror(
                 "Could not open file location",
-                f"The result folder could not be opened.\n\n{error}",
+                f"The database directory could not be opened.\n\n{error}",
                 parent=self.root,
             )
 
