@@ -92,11 +92,13 @@ class RawSTRaPApp:
         self.provider = provider
         self.api_key = api_key
         self.model_id = model_id
+        self.database_backend = "sqlite"
+        self.mysql_config: dict[str, Any] | None = None
         self.source = ""
         self.prepared_payload = ""
         self._result_queue: queue.Queue[tuple[bool, Any]] = queue.Queue()
         if api_key:
-            self._draw_main_screen()
+            self._draw_database_choice_screen()
         else:
             self._draw_welcome_screen()
 
@@ -276,6 +278,93 @@ class RawSTRaPApp:
         canvas.tag_bind(art_id, "<Button-1>", self._landing_click)
         canvas.tag_bind(art_id, "<Motion>", self._landing_motion)
 
+    def _draw_database_choice_screen(self) -> None:
+        """Choose local SQLite storage or a MySQL-backed workflow."""
+        for child in self.root.winfo_children():
+            child.destroy()
+
+        canvas = self._draw_shell()
+        art_id = self._set_art(
+            canvas,
+            title="CHOOSE DATABASE",
+            subtitle="Select where your structured data will be stored",
+            title_y=113,
+            subtitle_y=181,
+            title_size=27,
+            buttons=(
+                {"bounds": (172, 292, 407, 338), "label": "SQLite", "font_size": 15},
+                {"bounds": (172, 350, 407, 397), "label": "MySQL", "font_size": 15},
+            ),
+        )
+        canvas.tag_bind(art_id, "<Button-1>", self._database_choice_click)
+
+    def _database_choice_click(self, event: tk.Event) -> None:
+        if 172 <= event.x <= 407 and 292 <= event.y <= 338:
+            self.database_backend = "sqlite"
+            self.mysql_config = None
+            self._draw_main_screen()
+        elif 172 <= event.x <= 407 and 350 <= event.y <= 397:
+            config = self._ask_mysql_connection_options()
+            if config is not None:
+                self.database_backend = "mysql"
+                self.mysql_config = config
+                self._draw_main_screen()
+
+    def _ask_mysql_connection_options(self) -> dict[str, Any] | None:
+        """Collect MySQL connection settings without persisting the password."""
+        host = simpledialog.askstring(
+            "MySQL connection",
+            "MySQL host [localhost]:",
+            initialvalue="localhost",
+            parent=self.root,
+        )
+        if host is None:
+            return None
+        host = host.strip() or "localhost"
+
+        port_text = simpledialog.askstring(
+            "MySQL connection",
+            "MySQL port [3306]:",
+            initialvalue="3306",
+            parent=self.root,
+        )
+        if port_text is None:
+            return None
+        try:
+            port = int(port_text.strip() or "3306")
+        except ValueError:
+            messagebox.showerror("Invalid MySQL port", "Enter a port from 1 to 65535.", parent=self.root)
+            return None
+        if not 1 <= port <= 65535:
+            messagebox.showerror("Invalid MySQL port", "Enter a port from 1 to 65535.", parent=self.root)
+            return None
+
+        username = simpledialog.askstring(
+            "MySQL connection",
+            "MySQL username:",
+            initialvalue="root",
+            parent=self.root,
+        )
+        if username is None:
+            return None
+        username = username.strip()
+        if not username:
+            messagebox.showerror("MySQL username required", "Enter a MySQL username.", parent=self.root)
+            return None
+
+        password = simpledialog.askstring(
+            "MySQL connection",
+            "MySQL password:",
+            show="*",
+            parent=self.root,
+        )
+        if password is None:
+            return None
+        if not password:
+            messagebox.showerror("MySQL password required", "Enter a MySQL password.", parent=self.root)
+            return None
+        return {"host": host, "port": port, "user": username, "password": password}
+
     def _render_landing_art(self) -> int:
         buttons = []
         for index, button in enumerate(self.landing_button_specs):
@@ -377,7 +466,11 @@ class RawSTRaPApp:
         self.source = source
         if self.provider:
             self.prepared_payload = parser.prepare_provider_payload(source)
-            storage = self._ask_storage_options(parser)
+            storage = (
+                self._ask_mysql_storage_options(parser)
+                if self.database_backend == "mysql"
+                else self._ask_storage_options(parser)
+            )
             if storage is None:
                 return
             database_path, table_name = storage
@@ -393,10 +486,20 @@ class RawSTRaPApp:
             if not confirmed_free:
                 self.status_label.config(text="No request was sent.")
                 return
-            if Path(database_path).exists() and not messagebox.askyesno(
-                "Database already exists",
-                "This database file already exists. Rows will be added to the selected "
-                "table; existing rows will not be replaced. Continue?",
+            existing_storage = (
+                Path(database_path).exists()
+                if self.database_backend == "sqlite"
+                else True
+            )
+            if existing_storage and not messagebox.askyesno(
+                "Confirm database save",
+                (
+                    "This database file already exists. Rows will be added to the selected "
+                    "table; existing rows will not be replaced. Continue?"
+                    if self.database_backend == "sqlite"
+                    else "Rows will be added to the selected MySQL table and the local SQLite "
+                    "mirror. Existing rows will not be replaced. Continue?"
+                ),
                 parent=self.root,
             ):
                 return
@@ -406,7 +509,14 @@ class RawSTRaPApp:
             self._set_process_button_enabled(False)
             threading.Thread(
                 target=self._run_provider_pipeline_worker,
-                args=(source, self.prepared_payload, database_path, table_name),
+                args=(
+                    source,
+                    self.prepared_payload,
+                    database_path,
+                    table_name,
+                    self.database_backend,
+                    self.mysql_config,
+                ),
                 daemon=True,
             ).start()
             self.root.after(100, self._poll_pipeline_result)
@@ -461,28 +571,79 @@ class RawSTRaPApp:
             return None
         return PROJECT_ROOT / f"{database_name}.db", table_name
 
+    def _ask_mysql_storage_options(self, parser: Any) -> tuple[Path, str] | None:
+        """Collect validated MySQL database/table names and the SQLite mirror path."""
+        database_name = simpledialog.askstring(
+            "MySQL database name",
+            "Database name (1-64 letters, numbers, or underscores; start with a letter or underscore):",
+            parent=self.root,
+        )
+        if database_name is None:
+            return None
+        database_name = database_name.strip()
+        try:
+            parser.validate_mysql_identifier(database_name, "database name")
+        except ValueError as error:
+            messagebox.showerror("Invalid database name", str(error), parent=self.root)
+            return None
+
+        table_name = simpledialog.askstring(
+            "MySQL table name",
+            "Table name (1-64 letters, numbers, or underscores; start with a letter or underscore):",
+            initialvalue="daily_activity",
+            parent=self.root,
+        )
+        if table_name is None:
+            return None
+        table_name = table_name.strip()
+        try:
+            parser.validate_mysql_identifier(table_name, "table name")
+        except ValueError as error:
+            messagebox.showerror("Invalid table name", str(error), parent=self.root)
+            return None
+        return PROJECT_ROOT / f"{database_name}.db", table_name
+
     def _run_provider_pipeline_worker(
         self,
         source: str,
         payload: str,
         database_path: Path,
         table_name: str,
+        database_backend: str = "sqlite",
+        mysql_config: dict[str, Any] | None = None,
     ) -> None:
+        connection = None
         try:
+            parser = _load_parser_module()
+            if database_backend == "mysql":
+                if mysql_config is None:
+                    raise ValueError("MySQL connection settings are missing.")
+                connection = parser.connect_mysql(**mysql_config)
             csv_response = _load_provider_module().generate_csv(
                 self.provider, self.api_key, self.model_id, payload
             )
-            result = _load_parser_module().save_provider_csv(
+            result = parser.save_provider_csv(
                 source,
                 csv_response,
                 database_path=database_path,
                 table_name=table_name,
             )
+            if connection is not None:
+                parser.save_records_to_mysql(
+                    connection,
+                    result["records"],
+                    database_name=database_path.stem,
+                    table_name=table_name,
+                )
             result["database_path"] = database_path
             result["table_name"] = table_name
+            result["database_backend"] = database_backend
             self._result_queue.put((True, result))
         except Exception as error:
             self._result_queue.put((False, str(error)))
+        finally:
+            if connection is not None:
+                connection.close()
 
     def _run_pipeline_worker(self, source_text: str) -> None:
         try:
@@ -516,6 +677,10 @@ class RawSTRaPApp:
         self.result_database_path = Path(
             result.get("database_path", parser.DEFAULT_DATABASE)
         )
+        if "table_name" in result:
+            self.result_table_name = result["table_name"]
+        elif hasattr(self, "result_table_name"):
+            del self.result_table_name
         self._draw_success_screen(Path(result["csv_path"]))
 
     def _draw_success_screen(self, csv_path: Path) -> None:
@@ -577,26 +742,31 @@ class RawSTRaPApp:
         self._render_success_art(self.success_canvas)
 
     def _preview_result_file(self) -> None:
-        """Open stage six with the generated CSV shown as a read-only table."""
-        try:
-            content = self.result_csv_path.read_text(encoding="utf-8-sig")
-        except (OSError, UnicodeError) as error:
-            messagebox.showerror(
-                "Could not preview file",
-                f"The result file could not be read.\n\n{error}",
-                parent=self.root,
-            )
-            return
-
-        try:
-            records = _load_parser_module().parse_csv_content(content)
-        except (csv.Error, ValueError) as error:
-            messagebox.showerror(
-                "Could not preview file",
-                f"The result CSV could not be displayed as a table.\n\n{error}",
-                parent=self.root,
-            )
-            return
+        """Preview provider rows from the local SQLite database mirror."""
+        parser = _load_parser_module()
+        if hasattr(self, "result_table_name"):
+            try:
+                records = parser.load_sqlite_table(
+                    self.result_database_path, self.result_table_name
+                )
+            except Exception as error:
+                messagebox.showerror(
+                    "Could not preview database",
+                    f"The SQLite database could not be displayed.\n\n{error}",
+                    parent=self.root,
+                )
+                return
+        else:
+            try:
+                content = self.result_csv_path.read_text(encoding="utf-8-sig")
+                records = parser.parse_csv_content(content)
+            except (OSError, UnicodeError, csv.Error, ValueError) as error:
+                messagebox.showerror(
+                    "Could not preview file",
+                    f"The result CSV could not be displayed as a table.\n\n{error}",
+                    parent=self.root,
+                )
+                return
         self._draw_preview_table(records)
 
     def _draw_preview_table(self, records: list[dict[str, str]]) -> None:

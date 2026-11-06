@@ -153,6 +153,105 @@ def validate_table_name(table_name: str) -> str:
 	return table_name
 
 
+def validate_mysql_identifier(identifier: str, label: str) -> str:
+	"""Validate a MySQL database, table, or column identifier."""
+	if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,63}", identifier, flags=re.ASCII):
+		raise ValueError(
+			f"Invalid {label}; use 1-64 letters, digits, or underscores, starting with a letter or underscore."
+		)
+	return identifier
+
+
+def connect_mysql(*, host: str, port: int, user: str, password: str) -> Any:
+	"""Establish a MySQL connection using Connector/Python."""
+	if not host.strip() or not user.strip() or not password:
+		raise ValueError("MySQL host, username, and password are required.")
+	if not isinstance(port, int) or not 1 <= port <= 65535:
+		raise ValueError("MySQL port must be an integer from 1 to 65535.")
+	try:
+		import mysql.connector
+	except ImportError as error:
+		raise RuntimeError(
+			"MySQL support requires mysql-connector-python. Install the project requirements and try again."
+		) from error
+	return mysql.connector.connect(
+		host=host,
+		port=port,
+		user=user,
+		password=password,
+		autocommit=False,
+		connection_timeout=10,
+	)
+
+
+def save_records_to_mysql(
+	connection: Any,
+	records: list[dict[str, str]],
+	*,
+	database_name: str,
+	table_name: str,
+) -> int:
+	"""Create a dynamic MySQL table and insert CSV records transactionally."""
+	validate_mysql_identifier(database_name, "database name")
+	validate_mysql_identifier(table_name, "table name")
+	if not records:
+		raise ValueError("CSV must contain at least one data row.")
+	headers = list(records[0])
+	if not headers:
+		raise ValueError("CSV must include at least one column.")
+	if any(not header or "\x00" in header or len(header) > 64 for header in headers):
+		raise ValueError("MySQL CSV headers must be 1-64 characters and must not contain NULs.")
+	if any(set(record) != set(headers) for record in records):
+		raise ValueError("CSV rows must have the same columns.")
+
+	def quote_identifier(identifier: str) -> str:
+		return "`" + identifier.replace("`", "``") + "`"
+
+	database = quote_identifier(database_name)
+	table = quote_identifier(table_name)
+	columns = [quote_identifier(header) for header in headers]
+	cursor = connection.cursor()
+	try:
+		cursor.execute(
+			"SELECT SCHEMA_NAME FROM INFORMATION_SCHEMA.SCHEMATA WHERE SCHEMA_NAME = %s",
+			(database_name,),
+		)
+		if cursor.fetchone() is None:
+			cursor.execute(f"CREATE DATABASE {database}")
+		cursor.execute(f"USE {database}")
+		column_definitions = ", ".join(f"{column} TEXT" for column in columns)
+		cursor.execute(f"CREATE TABLE IF NOT EXISTS {table} ({column_definitions})")
+		column_list = ", ".join(columns)
+		placeholders = ", ".join("%s" for _ in headers)
+		cursor.executemany(
+			f"INSERT INTO {table} ({column_list}) VALUES ({placeholders})",
+			[tuple(record[header] for header in headers) for record in records],
+		)
+		connection.commit()
+	except Exception:
+		connection.rollback()
+		raise
+	finally:
+		cursor.close()
+	return len(records)
+
+
+def load_sqlite_table(
+	database_path: str | Path,
+	table_name: str,
+) -> list[dict[str, str]]:
+	"""Read a saved SQLite table as string-valued records for the result preview."""
+	validate_table_name(table_name)
+	quoted_table = _quote_identifier(table_name)
+	with closing(sqlite3.connect(database_path)) as connection:
+		connection.row_factory = sqlite3.Row
+		rows = connection.execute(f"SELECT * FROM {quoted_table}").fetchall()
+	return [
+		{key: "" if value is None else str(value) for key, value in dict(row).items()}
+		for row in rows
+	]
+
+
 def _quote_identifier(identifier: str) -> str:
 	"""Quote an SQLite identifier, escaping embedded double quotes."""
 	return '"' + identifier.replace('"', '""') + '"'
