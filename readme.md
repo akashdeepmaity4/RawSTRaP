@@ -1,10 +1,6 @@
 # RawSTRaP — Raw Source Text to Relation Parser
 
-[![Python 3.14](https://img.shields.io/badge/Python-3.14%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
-[![Desktop UI: Tkinter](https://img.shields.io/badge/UI-Tkinter-2C2D72)](https://docs.python.org/3/library/tkinter.html)
-[![SQLite](https://img.shields.io/badge/Database-SQLite-003B57?logo=sqlite&logoColor=white)](https://www.sqlite.org/)
-[![MySQL](https://img.shields.io/badge/Database-MySQL-4479A1?logo=mysql&logoColor=white)](https://dev.mysql.com/doc/)
-[![Provider adapters](https://img.shields.io/badge/AI%20providers-5-8A63D2)](#supported-providers)
+![Python](https://img.shields.io/badge/python-3670A0?style=for-the-badge&logo=python&logoColor=ffdd54)![SQLite](https://img.shields.io/badge/sqlite-%2307405e.svg?style=for-the-badge&logo=sqlite&logoColor=white) ![MySQL](https://img.shields.io/badge/mysql-4479A1.svg?style=for-the-badge&logo=mysql&logoColor=white) ![Git](https://img.shields.io/badge/git-%23F05033.svg?style=for-the-badge&logo=git&logoColor=white) ![GitHub](https://img.shields.io/badge/github-%23121011.svg?style=for-the-badge&logo=github&logoColor=white)
 
 RawSTRaP turns text and plain-text documents into CSV records, then saves them to SQLite and, optionally, MySQL. The current application is a local Python desktop app: Tkinter provides the interface, Pillow renders its screen artwork, and provider adapters handle model validation and CSV generation.
 
